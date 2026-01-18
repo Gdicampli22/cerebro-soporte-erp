@@ -1,82 +1,105 @@
 import os
 import google.generativeai as genai
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 from agent_tools import crear_ticket_en_db
 import json
+import re
 
 app = FastAPI()
 
 # Configuración de Gemini
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
 
-# Usamos el modelo Flash por rapidez
-model = genai.GenerativeModel('gemini-3-flash-preview')
+# Usamos Flash 1.5 que es rápido y acepta instrucciones complejas
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 class ChatRequest(BaseModel):
     mensaje: str
     cliente: str = "Cliente Desconocido"
 
+def limpiar_json(texto):
+    """
+    Busca el primer '{' y el último '}' para extraer solo el JSON,
+    ignorando texto extra o markdown como ```json
+    """
+    try:
+        # Busca el patrón de un objeto JSON
+        match = re.search(r'\{.*\}', texto, re.DOTALL)
+        if match:
+            return match.group(0)
+        return texto
+    except:
+        return texto
+
 @app.get("/")
 def home():
-    return {"estado": "Cerebro IA activo 🧠"}
+    return {"estado": "Cerebro IA activo y mejorado 🧠 v2"}
 
 @app.post("/chat")
 def chat_soporte(request: ChatRequest):
     
-    # 1. EL PROMPT DEL SISTEMA
+    # PROMPT MEJORADO: Le prohibimos hablar, solo JSON
     system_prompt = f"""
-    Eres un Agente de Soporte Técnico experto en ERP. Tu cliente es: {request.cliente}.
-    
-    Tus reglas:
-    1. Si el usuario saluda o pregunta algo general, responde amablemente y breve.
-    2. Si el usuario reporta un ERROR, FALLA o PROBLEMA:
-       - Genera un JSON estricto con la acción "crear_ticket".
-       - Prioridad: Alta (sistema caído), Media (error parcial), Baja (dudas).
-    
-    FORMATO JSON OBLIGATORIO PARA TICKETS:
+    Eres un sistema experto de soporte ERP. 
+    Tu trabajo es clasificar el mensaje del cliente: {request.cliente}.
+
+    SI EL USUARIO REPORTA UN PROBLEMA (Error, Falla, Caída, No funciona):
+    Debes RESPONDER ÚNICAMENTE con este formato JSON (sin texto extra):
     {{
       "accion": "crear_ticket",
-      "asunto": "Resumen breve del error",
-      "prioridad": "Alta/Media/Baja",
-      "respuesta_usuario": "Texto para decirle al usuario que ya reportaste el error"
+      "asunto": "Resumen técnico corto del error",
+      "prioridad": "Alta", 
+      "respuesta_usuario": "Mensaje amable confirmando el ticket"
     }}
+    Nota: Prioridad 'Alta' si afecta facturación o acceso. 'Media' si es funcional. 'Baja' si es duda.
 
-    Si NO es un ticket, responde solo con texto plano.
+    SI ES SOLO UN SALUDO O DUDA GENERAL:
+    Responde con texto plano normal.
     """
 
-    # 2. Consultar a Gemini
     try:
         chat = model.start_chat(history=[])
-        response = chat.send_message(f"{system_prompt}\n\nMensaje del usuario: {request.mensaje}")
-        texto_respuesta = response.text.strip()
+        response = chat.send_message(f"{system_prompt}\n\nINPUT USUARIO: {request.mensaje}")
+        texto_crudo = response.text.strip()
 
-        # 3. Detectar si la IA quiere crear un ticket
-        if "crear_ticket" in texto_respuesta:
-            # Buscamos el JSON dentro de la respuesta (por si la IA pone texto extra)
-            inicio = texto_respuesta.find('{')
-            fin = texto_respuesta.rfind('}') + 1
-            
-            if inicio != -1 and fin != -1:
-                json_str = texto_respuesta[inicio:fin]
-                datos_ia = json.loads(json_str)
+        # 1. Limpieza agresiva del JSON
+        json_limpio = limpiar_json(texto_crudo)
 
+        # 2. Intentamos leerlo como JSON
+        if '"accion": "crear_ticket"' in json_limpio or "crear_ticket" in json_limpio:
+            try:
+                datos_ia = json.loads(json_limpio)
+                
                 if datos_ia.get("accion") == "crear_ticket":
-                    # ¡EJECUTAMOS LA HERRAMIENTA!
+                    # ¡EJECUTAR HERRAMIENTA!
                     resultado = crear_ticket_en_db(
                         cliente=request.cliente,
-                        asunto=datos_ia["asunto"],
-                        prioridad=datos_ia["prioridad"]
+                        asunto=datos_ia.get("asunto", "Ticket sin asunto"),
+                        prioridad=datos_ia.get("prioridad", "Media")
                     )
                     
+                    # Devolvemos éxito con el ID del ticket para verificar
                     if resultado["status"] == "success":
                         return {
-                            "respuesta": f"{datos_ia['respuesta_usuario']} (Ticket ID: {resultado['id']})",
+                            "respuesta": f"{datos_ia['respuesta_usuario']}",
+                            "info_ticket": f"✅ Ticket Creado ID: {resultado['id']}",
                             "ticket_creado": True
                         }
-        
-        # Si no es ticket o falla el JSON, devolvemos respuesta normal
-        return {"respuesta": texto_respuesta}
+                    else:
+                        return {
+                            "respuesta": "Hubo un error técnico guardando el ticket.",
+                            "debug_error": resultado["mensaje"]
+                        }
+            except json.JSONDecodeError:
+                # Si falló el JSON, devolvemos el texto pero avisamos
+                return {
+                    "respuesta": "La IA intentó crear un ticket pero el formato falló.",
+                    "debug_raw": texto_crudo
+                }
+
+        # Si no era ticket, respuesta normal
+        return {"respuesta": texto_crudo}
 
     except Exception as e:
-        return {"respuesta": f"Error procesando solicitud: {str(e)}"}
+        return {"respuesta": f"Error crítico en el servidor: {str(e)}"}
