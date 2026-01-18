@@ -11,7 +11,7 @@ app = FastAPI()
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 # Usamos el modelo Flash por rapidez
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-3-flash-preview')
 
 class ChatRequest(BaseModel):
     mensaje: str
