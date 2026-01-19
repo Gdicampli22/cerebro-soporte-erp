@@ -19,39 +19,41 @@ class AnalisisTicket(BaseModel):
 # --- Función 1: Analizar el problema ---
 def analizar_ticket(mensaje_usuario: str):
     """
-    Usa Gemini 3 para entender si el correo es un problema real y extraer datos.
+    Usa Gemini Pro (Estable) para analizar el ticket.
     """
     if not GOOGLE_API_KEY:
         print("❌ Error: No se encontró GOOGLE_API_KEY")
         return None
 
     try:
-        # ✅ ACTUALIZADO: Usamos el modelo que tú confirmaste
-        nombre_modelo = 'gemini-3-flash-preview'
+        # CAMBIO DEFINITIVO: Usamos 'gemini-pro'
+        # Este nombre es universal y funciona con todas las versiones de la librería.
+        nombre_modelo = 'gemini-pro'
         
-        # Usamos modo JSON manual para máxima compatibilidad
-        model = genai.GenerativeModel(nombre_modelo,
-            generation_config={"response_mime_type": "application/json"} 
-        )
+        model = genai.GenerativeModel(nombre_modelo)
 
         prompt = f"""
         Actúa como un experto en soporte técnico. Analiza este correo:
         "{mensaje_usuario}"
 
-        Tu misión es extraer estos datos en formato JSON exacto:
+        Responde ÚNICAMENTE con un objeto JSON válido (sin markdown, sin ```json).
+        El JSON debe tener esta estructura exacta:
         {{
             "es_ticket_valido": true/false,
-            "categoria": Str (Ej: Hardware, Software, Acceso, Facturación),
-            "prioridad": Str (Baja, Media, Alta, Crítica),
-            "resumen": Str (max 10 palabras),
-            "id_ticket": Str (Genera un ID único ej: TCK-8833)
+            "categoria": "Hardware/Software/Acceso/etc",
+            "prioridad": "Baja/Media/Alta/Critica",
+            "resumen": "Resumen corto",
+            "id_ticket": "Genera un ID (ej: TCK-9922)"
         }}
         """
 
         response = model.generate_content(prompt)
         
-        # Procesamiento manual del JSON
-        datos_dict = json.loads(response.text)
+        # Limpieza de seguridad por si la IA pone comillas raras o markdown
+        texto_limpio = response.text.replace("```json", "").replace("```", "").strip()
+        
+        # Procesamiento manual
+        datos_dict = json.loads(texto_limpio)
         return AnalisisTicket(**datos_dict)
 
     except Exception as e:
@@ -61,14 +63,13 @@ def analizar_ticket(mensaje_usuario: str):
 # --- Función 2: Redactar respuesta ---
 def generar_respuesta_cliente(cliente_nombre: str, categoria: str, prioridad: str):
     """
-    Usa Gemini para escribir un correo amable.
+    Usa Gemini Pro para escribir un correo amable.
     """
     if not GOOGLE_API_KEY:
         return "Hemos recibido su solicitud. Un técnico la revisará pronto."
 
     try:
-        # Usamos el mismo modelo potente para la respuesta
-        model = genai.GenerativeModel('gemini-3-flash-preview')
+        model = genai.GenerativeModel('gemini-pro')
         
         prompt = f"""
         Escribe un correo de respuesta muy breve y profesional para el cliente "{cliente_nombre}".
