@@ -3,6 +3,7 @@ import google.generativeai as genai
 from pydantic import BaseModel
 from typing import Optional
 
+
 # Configuración de la IA
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
