@@ -13,7 +13,7 @@ class AnalisisTicket(BaseModel):
     categoria: str
     prioridad: str
     resumen: str
-    id_ticket: str  # Quitamos el Optional y el = None para evitar el error de schema
+    id_ticket: str  # <--- CAMBIO CLAVE: Quitamos el "= None" para evitar el error
 
 # --- Función 1: Analizar el problema ---
 def analizar_ticket(mensaje_usuario: str):
@@ -41,13 +41,10 @@ def analizar_ticket(mensaje_usuario: str):
         2. categoria: (Ej: Hardware, Software, Acceso, Facturación).
         3. prioridad: (Baja, Media, Alta, Crítica).
         4. resumen: Resumen del problema en max 10 palabras.
-        5. id_ticket: Genera un ID único (Ej: TCK-8833). Si no es válido, pon "N/A".
+        5. id_ticket: Genera un ID único (Ej: TCK-8833). Si no aplica, pon "N/A".
         """
 
         response = model.generate_content(prompt)
-        
-        # Devolvemos el texto JSON directamente para que Pydantic lo procese en main.py
-        # o el objeto instanciado si la librería lo soporta nativamente.
         return response.content
 
     except Exception as e:
