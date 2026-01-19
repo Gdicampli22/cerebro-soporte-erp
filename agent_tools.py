@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import google.generativeai as genai
 from pydantic import BaseModel
 
@@ -16,54 +17,57 @@ class AnalisisTicket(BaseModel):
     resumen: str
     id_ticket: str
 
-# --- Función 1: Analizar el problema ---
+# --- Función 1: Analizar el problema (Con limpieza Regex) ---
 def analizar_ticket(mensaje_usuario: str):
     """
-    Usa Gemini Pro (Estable) para analizar el ticket.
+    Usa Gemini Pro para analizar el ticket y limpia la respuesta con Regex.
     """
     if not GOOGLE_API_KEY:
         print("❌ Error: No se encontró GOOGLE_API_KEY")
         return None
 
     try:
-        # CAMBIO DEFINITIVO: Usamos 'gemini-pro'
-        # Este nombre es universal y funciona con todas las versiones de la librería.
-        nombre_modelo = 'gemini-pro'
-        
-        model = genai.GenerativeModel(nombre_modelo)
+        # Usamos 'gemini-pro' que es el modelo más compatible
+        model = genai.GenerativeModel('gemini-pro')
 
         prompt = f"""
-        Actúa como un experto en soporte técnico. Analiza este correo:
+        Actúa como sistema de soporte. Analiza este correo:
         "{mensaje_usuario}"
 
-        Responde ÚNICAMENTE con un objeto JSON válido (sin markdown, sin ```json).
-        El JSON debe tener esta estructura exacta:
+        Tu salida debe ser ÚNICAMENTE un JSON válido.
+        Estructura obligatoria:
         {{
             "es_ticket_valido": true/false,
-            "categoria": "Hardware/Software/Acceso/etc",
+            "categoria": "Hardware/Software/Red/Otro",
             "prioridad": "Baja/Media/Alta/Critica",
-            "resumen": "Resumen corto",
-            "id_ticket": "Genera un ID (ej: TCK-9922)"
+            "resumen": "Resumen corto (max 10 palabras)",
+            "id_ticket": "Genera ID único ej: TCK-8833"
         }}
         """
 
         response = model.generate_content(prompt)
+        texto_crudo = response.text
         
-        # Limpieza de seguridad por si la IA pone comillas raras o markdown
-        texto_limpio = response.text.replace("```json", "").replace("```", "").strip()
+        # --- EL BISTURÍ (Regex) ---
+        # Busca texto entre llaves { ... } ignorando todo lo demás
+        match = re.search(r'\{.*\}', texto_crudo, re.DOTALL)
         
-        # Procesamiento manual
-        datos_dict = json.loads(texto_limpio)
-        return AnalisisTicket(**datos_dict)
+        if match:
+            json_str = match.group(0)
+            datos_dict = json.loads(json_str)
+            return AnalisisTicket(**datos_dict)
+        else:
+            print(f"⚠️ IA no devolvió JSON limpio. Recibido: {texto_crudo}")
+            return None
 
     except Exception as e:
-        print(f"⚠️ Error al analizar ticket con IA ({nombre_modelo}): {e}")
+        print(f"⚠️ Error fatal en IA: {e}")
         return None
 
 # --- Función 2: Redactar respuesta ---
 def generar_respuesta_cliente(cliente_nombre: str, categoria: str, prioridad: str):
     """
-    Usa Gemini Pro para escribir un correo amable.
+    Usa Gemini Pro para escribir un correo de respuesta.
     """
     if not GOOGLE_API_KEY:
         return "Hemos recibido su solicitud. Un técnico la revisará pronto."
@@ -72,10 +76,9 @@ def generar_respuesta_cliente(cliente_nombre: str, categoria: str, prioridad: st
         model = genai.GenerativeModel('gemini-pro')
         
         prompt = f"""
-        Escribe un correo de respuesta muy breve y profesional para el cliente "{cliente_nombre}".
-        Confirma que recibimos su reporte sobre "{categoria}".
-        Infórmale que ha sido clasificado con prioridad "{prioridad}".
-        No prometas tiempos exactos. Firma: "Soporte Técnico".
+        Escribe un correo muy breve (max 3 líneas) para el cliente "{cliente_nombre}".
+        Confirma recepción del caso "{categoria}" con prioridad "{prioridad}".
+        Firma: Soporte Técnico.
         """
         
         response = model.generate_content(prompt)
