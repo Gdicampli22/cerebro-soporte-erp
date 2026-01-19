@@ -1,4 +1,5 @@
 import os
+import json
 import google.generativeai as genai
 from pydantic import BaseModel
 
@@ -7,15 +8,15 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
 
-# --- Estructura de datos SIMPLIFICADA (Sin opcionales ni defaults) ---
+# --- Estructura de datos (Para usar en main.py) ---
 class AnalisisTicket(BaseModel):
     es_ticket_valido: bool
     categoria: str
     prioridad: str
     resumen: str
-    id_ticket: str  # <--- CAMBIO CLAVE: Quitamos el "= None" para evitar el error
+    id_ticket: str
 
-# --- Función 1: Analizar el problema ---
+# --- Función 1: Analizar el problema (Versión Manual) ---
 def analizar_ticket(mensaje_usuario: str):
     """
     Usa Gemini para entender si el correo es un problema real y extraer datos.
@@ -25,11 +26,10 @@ def analizar_ticket(mensaje_usuario: str):
         return None
 
     try:
+        # SOLUCIÓN: Quitamos 'response_schema' para evitar el error "Unknown field"
+        # Solo pedimos que responda en JSON.
         model = genai.GenerativeModel('gemini-1.5-flash',
-            generation_config={
-                "response_mime_type": "application/json", 
-                "response_schema": AnalisisTicket
-            }
+            generation_config={"response_mime_type": "application/json"} 
         )
 
         prompt = f"""
@@ -37,15 +37,23 @@ def analizar_ticket(mensaje_usuario: str):
         "{mensaje_usuario}"
 
         Tu misión es extraer estos datos en formato JSON exacto:
-        1. es_ticket_valido: true si es un reporte real, false si es spam/marketing.
-        2. categoria: (Ej: Hardware, Software, Acceso, Facturación).
-        3. prioridad: (Baja, Media, Alta, Crítica).
-        4. resumen: Resumen del problema en max 10 palabras.
-        5. id_ticket: Genera un ID único (Ej: TCK-8833). Si no aplica, pon "N/A".
+        {{
+            "es_ticket_valido": true/false, (true si es un reporte real)
+            "categoria":Str, (Ej: Hardware, Software, Acceso, Facturación)
+            "prioridad": Str, (Baja, Media, Alta, Crítica)
+            "resumen": Str, (Resumen en max 10 palabras)
+            "id_ticket": Str (Genera un ID único ej: TCK-8833. Si no aplica, pon "N/A")
+        }}
         """
 
         response = model.generate_content(prompt)
-        return response.content
+        
+        # PROCESAMIENTO MANUAL (A prueba de errores)
+        # Convertimos el texto JSON de la IA en un objeto Python nosotros mismos
+        datos_dict = json.loads(response.text)
+        
+        # Lo convertimos al formato que espera main.py
+        return AnalisisTicket(**datos_dict)
 
     except Exception as e:
         print(f"⚠️ Error al analizar ticket con IA: {e}")
