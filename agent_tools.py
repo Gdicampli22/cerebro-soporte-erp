@@ -28,7 +28,7 @@ def analizar_ticket(mensaje_usuario: str):
 
     try:
         # Usamos 'gemini-pro' que es el modelo más compatible
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-3-flash-preview')
 
         prompt = f"""
         Actúa como sistema de soporte. Analiza este correo:
