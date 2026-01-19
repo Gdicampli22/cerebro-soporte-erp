@@ -1,108 +1,92 @@
-import os
-import google.generativeai as genai
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from agent_tools import crear_ticket_en_db
-import json
-import re
+import os
+import re # Importamos expresiones regulares para buscar el [TCK]
+from supabase import create_client, Client
+from agent_tools import analizar_ticket, generar_respuesta_cliente
 
+# --- Configuración ---
 app = FastAPI()
 
-# Configuración de Gemini
-genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Usamos Flash 1.5
-model = genai.GenerativeModel('gemini-3-flash-preview')
-
-# Modelo de datos actualizado para recibir E-MAILS
-class EmailRequest(BaseModel):
-    mensaje: str       # El cuerpo del correo
-    cliente: str       # El correo del remitente (ej: juan@solartech.com)
-    asunto: str = "Sin asunto" # El título del correo
-
-def limpiar_json(texto):
-    """Limpia el texto para extraer solo el JSON"""
-    try:
-        match = re.search(r'\{.*\}', texto, re.DOTALL)
-        if match:
-            return match.group(0)
-        return texto
-    except:
-        return texto
+class EmailInput(BaseModel):
+    mensaje: str
+    cliente: str
+    asunto: str
 
 @app.get("/")
-def home():
-    return {"estado": "Cerebro IA listo para Emails 📧"}
+def read_root():
+    return {"estado": "Cerebro Soporte Activo v3 (Con Historial)"}
 
-@app.post("/procesar_email") # Cambiamos el nombre del endpoint para ser más claros
-def procesar_email(request: EmailRequest):
+@app.post("/procesar_email")
+def procesar_email(email: EmailInput):
+    # 1. BUSCAR SI YA EXISTE UN TICKET (Mirando el Asunto)
+    # Buscamos el patrón [TCK-XXXXXX]
+    match = re.search(r"\[(TCK-\d+)\]", email.asunto)
     
-    # PROMPT ESPECIALIZADO EN CORREOS
-    system_prompt = f"""
-    Actúas como un Agente de Soporte Técnico ERP automático.
-    Acabas de recibir un CORREO ELECTRÓNICO.
-    
-    - Remitente: {request.cliente}
-    - Asunto: {request.asunto}
-    
-    Tus instrucciones:
-    1. Analiza si el correo reporta un problema, error o solicitud de soporte.
-    2. Si es un problema técnico:
-       - Genera un JSON con "accion": "crear_ticket".
-       - Define la prioridad basándote en el tono y urgencia del correo.
-       - Extrae la empresa basándote en el dominio del correo (ej: @solartech.com -> SolarTech).
-    
-    3. Si es SPAM, publicidad o algo irrelevante, responde con texto plano ignorándolo.
-
-    FORMATO JSON OBLIGATORIO:
-    {{
-      "accion": "crear_ticket",
-      "empresa_detectada": "Nombre de la empresa (o 'Desconocido')",
-      "asunto_ticket": "Título técnico resumen",
-      "prioridad": "Alta/Media/Baja",
-      "respuesta_para_email": "Redacta una respuesta formal de correo confirmando el ticket"
-    }}
-    """
-
-    try:
-        chat = model.start_chat(history=[])
-        # Combinamos asunto y mensaje para que la IA lea todo
-        prompt_completo = f"{system_prompt}\n\nCUERPO DEL CORREO:\n{request.mensaje}"
+    if match:
+        # --- ES UNA RESPUESTA A UN TICKET EXISTENTE ---
+        ticket_id = match.group(1)
+        print(f"🔄 Actualización detectada para el ticket: {ticket_id}")
         
-        response = chat.send_message(prompt_completo)
-        texto_crudo = response.text.strip()
-        json_limpio = limpiar_json(texto_crudo)
-
-        # Detectamos si quiere crear ticket
-        if "crear_ticket" in json_limpio:
-            try:
-                datos_ia = json.loads(json_limpio)
-                
-                if datos_ia.get("accion") == "crear_ticket":
-                    # Usamos la empresa que detectó la IA o el email si no encontró nombre
-                    cliente_final = datos_ia.get("empresa_detectada", request.cliente)
-                    
-                    # EJECUTAR HERRAMIENTA DB
-                    resultado = crear_ticket_en_db(
-                        cliente=cliente_final,
-                        asunto=datos_ia.get("asunto_ticket", request.asunto),
-                        prioridad=datos_ia.get("prioridad", "Media")
-                    )
-                    
-                    if resultado["status"] == "success":
-                        return {
-                            "estado": "Ticket Creado",
-                            "id_ticket": resultado["id"],
-                            "respuesta_generada": datos_ia['respuesta_para_email']
-                        }
-                    else:
-                        return {"estado": "Error DB", "detalle": resultado["mensaje"]}
+        # 1.1 Recuperar el historial actual
+        data = supabase.table("tickets").select("historial").eq("id_ticket", ticket_id).execute()
+        
+        if data.data:
+            historial_previo = data.data[0].get('historial') or ""
             
-            except json.JSONDecodeError:
-                return {"estado": "Error IA", "detalle": "La IA no generó un JSON válido", "raw": texto_crudo}
+            # 1.2 Agregar el nuevo mensaje
+            nuevo_historial = f"{historial_previo}\n\n--- Cliente ({email.cliente}) ---\n{email.mensaje}"
+            
+            # 1.3 Guardar en Supabase y volver a abrir el ticket si estaba cerrado
+            supabase.table("tickets").update({
+                "historial": nuevo_historial,
+                "estado": "Abierto" # Reabrimos el ticket si el cliente responde
+            }).eq("id_ticket", ticket_id).execute()
+            
+            return {
+                "estado": "Actualizado", 
+                "id_ticket": ticket_id, 
+                "accion": "Ticket actualizado con nueva respuesta del cliente"
+            }
+        else:
+            # Si tiene ID pero no existe en base de datos (raro), lo tratamos como nuevo
+            pass
 
-        # Si no era ticket
-        return {"estado": "Ignorado", "razon": "No parece un reporte de soporte", "respuesta_ia": texto_crudo}
+    # --- ES UN TICKET NUEVO (Lógica anterior) ---
+    print("✨ Nuevo reporte detectado. Consultando a la IA...")
+    
+    # 1. La IA analiza el problema
+    analisis = analizar_ticket(email.mensaje)
+    
+    if not analisis:
+        return {"razon": "Error al analizar con IA", "estado": "Error"}
 
-    except Exception as e:
-        return {"estado": "Error Servidor", "detalle": str(e)}
+    if not analisis.es_ticket_valido:
+        return {"razon": "No parece un reporte de soporte", "estado": "Ignorado"}
+
+    # 2. Generar respuesta bonita para el cliente
+    respuesta_txt = generar_respuesta_cliente(email.cliente, analisis.categoria, analisis.prioridad)
+
+    # 3. Guardar en Supabase
+    datos_ticket = {
+        "id_ticket": analisis.id_ticket,
+        "cliente": email.cliente,
+        "asunto": email.asunto,
+        "descripcion": analisis.resumen,  # Guardamos el resumen de la IA
+        "categoria": analisis.categoria,
+        "prioridad": analisis.prioridad,
+        "estado": "Abierto",
+        "historial": f"--- Mensaje Original ---\n{email.mensaje}" # Iniciamos el historial
+    }
+    
+    supabase.table("tickets").insert(datos_ticket).execute()
+
+    return {
+        "estado": "Ticket Creado",
+        "id_ticket": analisis.id_ticket,
+        "respuesta_generada": respuesta_txt
+    }
