@@ -40,7 +40,7 @@ def analizar_ticket(mensaje_usuario: str):
 
     try:
         # 2. Configuración del Modelo (El más rápido y estable)
-        nombre_modelo = 'gemini-1.5-flash'
+        nombre_modelo = 'gemini-2.5-flash-lite'
         model = genai.GenerativeModel(nombre_modelo)
 
         prompt = f"""
