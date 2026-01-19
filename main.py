@@ -1,17 +1,21 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
-import re # Importamos expresiones regulares para buscar el [TCK]
+import re  # <--- ESTA ES LA CLAVE QUE SUELE FALTAR
 from supabase import create_client, Client
 from agent_tools import analizar_ticket, generar_respuesta_cliente
 
 # --- Configuración ---
 app = FastAPI()
 
+# Cargamos las variables de entorno
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+# Conectamos con Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Definimos qué esperamos recibir del email
 class EmailInput(BaseModel):
     mensaje: str
     cliente: str
@@ -24,27 +28,28 @@ def read_root():
 @app.post("/procesar_email")
 def procesar_email(email: EmailInput):
     # 1. BUSCAR SI YA EXISTE UN TICKET (Mirando el Asunto)
-    # Buscamos el patrón [TCK-XXXXXX]
+    # Buscamos el patrón [TCK-XXXXXX] usando Regex
     match = re.search(r"\[(TCK-\d+)\]", email.asunto)
     
     if match:
-        # --- ES UNA RESPUESTA A UN TICKET EXISTENTE ---
+        # --- CAMINO A: ES UNA RESPUESTA A UN TICKET EXISTENTE ---
         ticket_id = match.group(1)
         print(f"🔄 Actualización detectada para el ticket: {ticket_id}")
         
-        # 1.1 Recuperar el historial actual
+        # 1.1 Recuperar el historial actual de Supabase
         data = supabase.table("tickets").select("historial").eq("id_ticket", ticket_id).execute()
         
         if data.data:
+            # Obtenemos lo que ya había (o cadena vacía si es null)
             historial_previo = data.data[0].get('historial') or ""
             
-            # 1.2 Agregar el nuevo mensaje
+            # 1.2 Formatear el nuevo mensaje para agregarlo
             nuevo_historial = f"{historial_previo}\n\n--- Cliente ({email.cliente}) ---\n{email.mensaje}"
             
-            # 1.3 Guardar en Supabase y volver a abrir el ticket si estaba cerrado
+            # 1.3 Guardar en Supabase y reabrir el ticket si estaba cerrado
             supabase.table("tickets").update({
                 "historial": nuevo_historial,
-                "estado": "Abierto" # Reabrimos el ticket si el cliente responde
+                "estado": "Abierto" # Reabrimos el ticket porque el cliente respondió
             }).eq("id_ticket", ticket_id).execute()
             
             return {
@@ -53,10 +58,10 @@ def procesar_email(email: EmailInput):
                 "accion": "Ticket actualizado con nueva respuesta del cliente"
             }
         else:
-            # Si tiene ID pero no existe en base de datos (raro), lo tratamos como nuevo
+            # Si tiene ID pero no lo encontramos, seguimos como si fuera nuevo
             pass
 
-    # --- ES UN TICKET NUEVO (Lógica anterior) ---
+    # --- CAMINO B: ES UN TICKET NUEVO (Lógica anterior) ---
     print("✨ Nuevo reporte detectado. Consultando a la IA...")
     
     # 1. La IA analiza el problema
@@ -71,16 +76,16 @@ def procesar_email(email: EmailInput):
     # 2. Generar respuesta bonita para el cliente
     respuesta_txt = generar_respuesta_cliente(email.cliente, analisis.categoria, analisis.prioridad)
 
-    # 3. Guardar en Supabase
+    # 3. Guardar en Supabase (Incluyendo el historial inicial)
     datos_ticket = {
         "id_ticket": analisis.id_ticket,
         "cliente": email.cliente,
         "asunto": email.asunto,
-        "descripcion": analisis.resumen,  # Guardamos el resumen de la IA
+        "descripcion": analisis.resumen,
         "categoria": analisis.categoria,
         "prioridad": analisis.prioridad,
         "estado": "Abierto",
-        "historial": f"--- Mensaje Original ---\n{email.mensaje}" # Iniciamos el historial
+        "historial": f"--- Mensaje Original ---\n{email.mensaje}" 
     }
     
     supabase.table("tickets").insert(datos_ticket).execute()
