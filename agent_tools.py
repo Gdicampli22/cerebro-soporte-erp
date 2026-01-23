@@ -43,7 +43,7 @@ def analizar_ticket(mensaje_usuario: str):
         return AnalisisTicket(es_ticket_valido=True, categoria="Error", prioridad="Alta", resumen="Falta API Key", id_ticket=nuevo_id, modulo_detectado="N/A", datos_faltantes="N/A", intencion="REPORTE", razonamiento_ia="Sin API")
 
     # --- LISTA DE MODELOS A PROBAR (Respaldo Automático) ---
-    modelos = ['gemini-1.5-flash', 'gemini-pro']
+    modelos = ['gemini-3-flash-preview']
     
     for nombre_modelo in modelos:
         try:
