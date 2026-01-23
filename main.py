@@ -1,97 +1,75 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
-import re  # <--- ESTA ES LA CLAVE QUE SUELE FALTAR
 from supabase import create_client, Client
 from agent_tools import analizar_ticket, generar_respuesta_cliente
 
-# --- Configuración ---
 app = FastAPI()
 
-# Cargamos las variables de entorno
+# --- Configuración Supabase ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
-# Conectamos con Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Definimos qué esperamos recibir del email
-class EmailInput(BaseModel):
+# --- Modelo de los datos que llegan de Make ---
+class EmailSchema(BaseModel):
     mensaje: str
     cliente: str
     asunto: str
 
 @app.get("/")
 def read_root():
-    return {"estado": "Cerebro Soporte Activo v3 (Con Historial)"}
+    return {"status": "System Online"}
 
 @app.post("/procesar_email")
-def procesar_email(email: EmailInput):
-    # 1. BUSCAR SI YA EXISTE UN TICKET (Mirando el Asunto)
-    # Buscamos el patrón [TCK-XXXXXX] usando Regex
-    match = re.search(r"\[(TCK-\d+)\]", email.asunto)
-    
-    if match:
-        # --- CAMINO A: ES UNA RESPUESTA A UN TICKET EXISTENTE ---
-        ticket_id = match.group(1)
-        print(f"🔄 Actualización detectada para el ticket: {ticket_id}")
+def procesar_email(email: EmailSchema):
+    try:
+        # 1. Usar la IA para analizar el problema
+        analisis = analizar_ticket(email.mensaje)
         
-        # 1.1 Recuperar el historial actual de Supabase
-        data = supabase.table("tickets").select("historial").eq("id_ticket", ticket_id).execute()
-        
-        if data.data:
-            # Obtenemos lo que ya había (o cadena vacía si es null)
-            historial_previo = data.data[0].get('historial') or ""
-            
-            # 1.2 Formatear el nuevo mensaje para agregarlo
-            nuevo_historial = f"{historial_previo}\n\n--- Cliente ({email.cliente}) ---\n{email.mensaje}"
-            
-            # 1.3 Guardar en Supabase y reabrir el ticket si estaba cerrado
-            supabase.table("tickets").update({
-                "historial": nuevo_historial,
-                "estado": "Abierto" # Reabrimos el ticket porque el cliente respondió
-            }).eq("id_ticket", ticket_id).execute()
-            
-            return {
-                "estado": "Actualizado", 
-                "id_ticket": ticket_id, 
-                "accion": "Ticket actualizado con nueva respuesta del cliente"
+        # 2. Definir valores por defecto si falla la IA (Paracaídas extra)
+        if not analisis:
+            analisis_data = {
+                "categoria": "Sin Clasificar",
+                "prioridad": "Media",
+                "resumen": "Error de análisis",
+                "id_ticket": "MANUAL",
+                "es_ticket_valido": True
             }
         else:
-            # Si tiene ID pero no lo encontramos, seguimos como si fuera nuevo
-            pass
+            analisis_data = analisis.dict()
 
-    # --- CAMINO B: ES UN TICKET NUEVO (Lógica anterior) ---
-    print("✨ Nuevo reporte detectado. Consultando a la IA...")
-    
-    # 1. La IA analiza el problema
-    analisis = analizar_ticket(email.mensaje)
-    
-    if not analisis:
-        return {"razon": "Error al analizar con IA", "estado": "Error"}
+        # 3. Preparar el paquete para Supabase (Mapeo Correcto)
+        datos_ticket = {
+            "cliente": email.cliente,
+            "asunto": email.asunto,
+            "descripcion": email.mensaje,          # <--- AQUÍ: Mensaje original completo
+            "resumen": analisis_data["resumen"],   # <--- AQUÍ: Resumen corto de la IA
+            "categoria": analisis_data["categoria"],
+            "prioridad": analisis_data["prioridad"],
+            "id_ticket": analisis_data["id_ticket"],
+            "es_ticket_valido": analisis_data["es_ticket_valido"],
+            "estado": "Abierto",                   # Estado inicial por defecto
+            "historial": f"Ticket creado automáticamente para {email.cliente}"
+        }
 
-    if not analisis.es_ticket_valido:
-        return {"razon": "No parece un reporte de soporte", "estado": "Ignorado"}
+        # 4. Guardar en Supabase
+        response = supabase.table("tickets").insert(datos_ticket).execute()
 
-    # 2. Generar respuesta bonita para el cliente
-    respuesta_txt = generar_respuesta_cliente(email.cliente, analisis.categoria, analisis.prioridad)
+        # 5. Generar respuesta para el usuario
+        respuesta_ia = generar_respuesta_cliente(
+            email.cliente, 
+            analisis_data["categoria"], 
+            analisis_data["prioridad"]
+        )
 
-    # 3. Guardar en Supabase (Incluyendo el historial inicial)
-    datos_ticket = {
-        "id_ticket": analisis.id_ticket,
-        "cliente": email.cliente,
-        "asunto": email.asunto,
-        "descripcion": analisis.resumen,
-        "categoria": analisis.categoria,
-        "prioridad": analisis.prioridad,
-        "estado": "Abierto",
-        "historial": f"--- Mensaje Original ---\n{email.mensaje}" 
-    }
-    
-    supabase.table("tickets").insert(datos_ticket).execute()
+        return {
+            "status": "Ticket Creado",
+            "ticket_id": analisis_data["id_ticket"],
+            "respuesta_para_cliente": respuesta_ia
+        }
 
-    return {
-        "estado": "Ticket Creado",
-        "id_ticket": analisis.id_ticket,
-        "respuesta_generada": respuesta_txt
-    }
+    except Exception as e:
+        print(f"❌ Error en main.py: {e}")
+        # Importante: Devolver error 500 con detalle para ver en logs si falla
+        raise HTTPException(status_code=500, detail=str(e))
