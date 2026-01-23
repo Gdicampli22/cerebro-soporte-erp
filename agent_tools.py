@@ -41,7 +41,7 @@ def analizar_ticket(mensaje_usuario: str):
 
     try:
         # Usamos gemini-pro que ya confirmamos que funciona
-        model = genai.GenerativeModel('gemini-pro', generation_config=generation_config)
+        model = genai.GenerativeModel('gemini-3-flash-preview', generation_config=generation_config)
 
         prompt = f"""
         ERES UN AUDITOR DE SOPORTE TÉCNICO ESTRICTO.
