@@ -11,13 +11,12 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
 
-# Temperatura un poco más alta para permitir "creatividad" al diagnosticar
+# Configuración estándar (Temperatura baja para precisión)
 generation_config = {
-  "temperature": 0.3, 
+  "temperature": 0.3,
   "max_output_tokens": 1024,
 }
 
-# --- Estructura de datos ---
 class AnalisisTicket(BaseModel):
     es_ticket_valido: bool
     categoria: str
@@ -27,13 +26,33 @@ class AnalisisTicket(BaseModel):
     modulo_detectado: str
     datos_faltantes: str
     intencion: str 
-    razonamiento_ia: str # Nuevo: Para ver qué pensó la IA
+    razonamiento_ia: str
 
-# --- Función Auxiliar ---
 def generar_id_ticket():
     fecha = datetime.datetime.now().strftime("%y%m%d")
     suffix = str(random.randint(100, 999))
     return f"TK-{fecha}-{suffix}"
+
+# --- NUEVA FUNCIÓN: LIMPIADOR DE JSON ---
+def limpiar_json(texto_sucio):
+    """
+    Elimina markdown (```json ... ```) y busca el primer '{' y el último '}'
+    para extraer solo el objeto JSON válido.
+    """
+    try:
+        # 1. Quitar bloques de código markdown
+        texto_limpio = re.sub(r"```json\s*", "", texto_sucio)
+        texto_limpio = re.sub(r"```", "", texto_limpio)
+        
+        # 2. Buscar dónde empieza y termina el JSON real
+        inicio = texto_limpio.find('{')
+        fin = texto_limpio.rfind('}') + 1
+        
+        if inicio != -1 and fin != -1:
+            return texto_limpio[inicio:fin]
+        return texto_sucio # Si no encuentra llaves, devuelve original (y fallará luego)
+    except:
+        return texto_sucio
 
 # --- FUNCIÓN 1: EL DIAGNOSTICADOR (Cerebro) ---
 def analizar_ticket(mensaje_usuario: str):
@@ -42,122 +61,95 @@ def analizar_ticket(mensaje_usuario: str):
     if not GOOGLE_API_KEY:
         return AnalisisTicket(es_ticket_valido=True, categoria="Error", prioridad="Alta", resumen="Falta API Key", id_ticket=nuevo_id, modulo_detectado="N/A", datos_faltantes="N/A", intencion="REPORTE", razonamiento_ia="Sin API")
 
-    # --- LISTA DE MODELOS A PROBAR (Respaldo Automático) ---
-    modelos = ['gemini-3-flash-preview']
+    # Intentamos con gemini-1.5-flash, si falla, gemini-pro
+    modelos = ['gemini-3-flash-preview', 'gemini-pro']
     
     for nombre_modelo in modelos:
         try:
             model = genai.GenerativeModel(nombre_modelo, generation_config=generation_config)
 
             prompt = f"""
-            ACTÚA COMO: Ingeniero de Soporte Nivel 3 (Experto en Diagnóstico).
-            TAREA: Analizar el reporte del usuario y determinar QUÉ INFORMACIÓN FALTA para resolver el caso.
+            ACTÚA COMO: Ingeniero de Soporte Experto (Nivel 3).
+            OBJETIVO: Diagnosticar qué información falta.
 
-            MENSAJE DEL USUARIO: "{mensaje_usuario}"
+            REPORTE USUARIO: "{mensaje_usuario}"
 
-            PASO 1: DETECTAR INTENCIÓN
-            - Si es solo "Gracias", "Ok" -> intencion="SALUDO".
-            - Si envía solo un archivo -> intencion="APORTE".
-            - Si reporta un problema -> intencion="REPORTE".
+            INSTRUCCIONES:
+            1. Detecta INTENCIÓN: SALUDO (Gracias/Hola), APORTE (Envío archivo), REPORTE (Problema).
+            2. Si es REPORTE:
+               - NO uses una checklist fija. PIENSA qué se necesita para ESE problema específico.
+               - Ej: "No imprime" -> Pide modelo de impresora. "Lento" -> Pide si es una sola PC.
+            3. Genera la lista 'datos_faltantes' con preguntas específicas.
 
-            PASO 2: RAZONAMIENTO DE DIAGNÓSTICO (Solo para REPORTE)
-            No uses una checklist genérica. PIENSA qué se necesita según el caso.
-            
-            EJEMPLOS DE RAZONAMIENTO:
-            - Caso: "No imprime la factura".
-              -> Necesito: Nombre de la impresora, si da error en pantalla, y si pasa con todas las facturas.
-            - Caso: "El sistema está lento".
-              -> Necesito: ¿Es en todos los módulos?, ¿Pasa en una sola PC o en todas?, Proveedor de internet.
-            - Caso: "Error 505 en Login".
-              -> Necesito: Captura de pantalla del error y usuario afectado.
-
-            PASO 3: GENERAR SALIDA
-            Si faltan datos, en 'datos_faltantes' escribe una LISTA CLARA y AMABLE de lo que necesitamos pedirle al cliente.
-            Si el reporte es completo, pon 'Ninguno'.
-
-            RESPONDE SOLO JSON:
+            RESPONDE SOLO EL JSON (Sin markdown):
             {{
                 "es_ticket_valido": true,
                 "intencion": "REPORTE, SALUDO o APORTE",
-                "categoria": "Software/Hardware/Red/Facturación",
+                "categoria": "Software/Hardware/Red/Consulta",
                 "prioridad": "Baja/Media/Alta",
-                "modulo_detectado": "Nombre del módulo (ej: Ventas) o 'General'",
-                "resumen": "Resumen del problema",
-                "razonamiento_ia": "Explica brevemente por qué pides esos datos",
-                "datos_faltantes": "La lista de preguntas para el cliente o 'Ninguno'"
+                "modulo_detectado": "Nombre o 'General'",
+                "resumen": "Resumen técnico corto",
+                "razonamiento_ia": "Por qué pides esto",
+                "datos_faltantes": "Lista de preguntas o 'Ninguno'"
             }}
             """
 
             response = model.generate_content(prompt)
-            match = re.search(r'\{.*\}', response.text, re.DOTALL)
-            if match:
-                datos_dict = json.loads(match.group(0))
-                datos_dict["id_ticket"] = nuevo_id
-                # Si el modelo no devolvió razonamiento (versiones viejas), lo rellenamos
-                if "razonamiento_ia" not in datos_dict: datos_dict["razonamiento_ia"] = "Análisis automático"
-                
-                return AnalisisTicket(**datos_dict)
-        
-        except Exception as e:
-            print(f"⚠️ Falló modelo {nombre_modelo}: {e}. Intentando siguiente...")
-            continue # Si falla, prueba el siguiente modelo de la lista
+            
+            # --- AQUÍ ESTÁ LA MAGIA DE LA CORRECCIÓN ---
+            texto_limpio = limpiar_json(response.text)
+            datos_dict = json.loads(texto_limpio)
+            
+            datos_dict["id_ticket"] = nuevo_id
+            if "razonamiento_ia" not in datos_dict: datos_dict["razonamiento_ia"] = "IA"
+            
+            return AnalisisTicket(**datos_dict)
 
-    # Si fallan todos
+        except Exception as e:
+            print(f"⚠️ Falló {nombre_modelo}: {e}")
+            continue # Prueba el siguiente modelo
+
+    # Fallback final si todo rompe
     return AnalisisTicket(
-        es_ticket_valido=True, categoria="General", prioridad="Media", resumen="Error IA",
-        id_ticket=nuevo_id, modulo_detectado="N/A", datos_faltantes="Revisión humana requerida", intencion="REPORTE", razonamiento_ia="Fallo total IA"
+        es_ticket_valido=True, categoria="Soporte", prioridad="Media", resumen="Error Análisis",
+        id_ticket=nuevo_id, modulo_detectado="N/A", datos_faltantes="Ninguno", intencion="REPORTE", razonamiento_ia="Fallo total"
     )
 
-# --- FUNCIÓN 2: EL AGENTE EMPÁTICO (Voz) ---
+# --- FUNCIÓN 2: EL AGENTE (Voz) ---
 def generar_respuesta_cliente(cliente_nombre: str, categoria: str, datos_faltantes: str, id_ticket: str, intencion: str, modulo: str):
-    # Intentamos primero con el modelo inteligente, si falla vamos al pro
     modelos = ['gemini-1.5-flash', 'gemini-pro']
-
+    
     for nombre_modelo in modelos:
         try:
             model = genai.GenerativeModel(nombre_modelo, generation_config=generation_config)
 
-            # --- ESTRATEGIA DE RESPUESTA ---
             if intencion == "SALUDO":
-                objetivo = "Agradecer el contacto, confirmar que el ticket sigue abierto/cerrado según corresponda y saludar profesionalmente."
+                instruccion = "Agradece y cierra el caso formalmente."
             elif intencion == "APORTE":
-                objetivo = "Confirmar la recepción de la nueva información. Indicar que el equipo técnico la analizará para avanzar con la solución."
+                instruccion = "Confirma recepción y anexo al expediente."
             else:
-                # REPORTE
                 if "Ninguno" in datos_faltantes or "ninguno" in datos_faltantes:
-                    objetivo = f"Informar que el reporte es excelente y completo. Confirmar que el caso sobre '{modulo}' ha sido derivado a los especialistas. Dar tranquilidad."
+                    instruccion = f"Confirma que el reporte es completo y se derivó a Nivel 2."
                 else:
-                    objetivo = f"""
-                    TU OBJETIVO ES OBTENER INFORMACIÓN SIN SONAR COMO UN ROBOT.
-                    Explica al cliente que para resolver su problema de '{categoria}', necesitamos entender mejor la situación.
-                    
-                    SOLICITA EXACTAMENTE ESTO:
+                    instruccion = f"""
+                    TU OBJETIVO ES CONSEGUIR ESTOS DATOS FALTANTES:
                     {datos_faltantes}
                     
-                    Usa un tono colaborativo: "Para poder ayudarle mejor...", "Necesitaríamos que nos indique..."
+                    Explica al cliente por qué son necesarios para resolver su problema de '{categoria}'.
+                    Sé amable pero técnico. Usa viñetas.
                     """
 
             prompt = f"""
-            ACTÚA COMO: Agente Senior de Customer Success (Empresa de Software ERP).
-            TONO: Profesional, Cercano, Resolutivo, Educado (Estilo Corporativo Premium).
-            IDIOMA: Español Neutro.
-
-            CONTEXTO:
-            - Cliente: {cliente_nombre}
-            - Ticket: #{id_ticket}
-            - Situación: {objetivo}
-
-            TAREA:
-            Redacta la respuesta de correo electrónico.
+            Redacta un correo de soporte PROFESIONAL.
+            Cliente: {cliente_nombre}
+            Ticket: {id_ticket}
             
-            REGLAS DE FORMATO:
-            1. Saludo personalizado.
-            2. Referencia al Ticket.
-            3. CUERPO: Desarrolla el objetivo con claridad. Si pides datos, usa viñetas (-).
-            4. Recordatorio de adjuntos si aplica.
-            5. Firma: "El Equipo de Soporte".
+            INSTRUCCIÓN: {instruccion}
 
-            IMPORTANTE: No uses frases robóticas como "En respuesta a su solicitud". Sé natural.
+            ESTILO:
+            - Saludo formal.
+            - Cuerpo claro y directo.
+            - Cierre profesional.
             """
             
             response = model.generate_content(prompt)
@@ -165,5 +157,5 @@ def generar_respuesta_cliente(cliente_nombre: str, categoria: str, datos_faltant
         
         except Exception:
             continue
-
-    return f"Estimado {cliente_nombre}, ticket #{id_ticket} actualizado. Aguardamos su respuesta."
+            
+    return f"Estimado {cliente_nombre}, ticket #{id_ticket} recibido."
