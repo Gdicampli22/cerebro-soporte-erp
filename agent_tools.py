@@ -11,9 +11,9 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
 
-# Configuración precisa para evitar "alucinaciones"
+# Temperatura 0 para máxima precisión y cero creatividad inventada
 generation_config = {
-  "temperature": 0.2, # Muy bajo para ser extremadamente formal y preciso
+  "temperature": 0.0, 
   "max_output_tokens": 1024,
 }
 
@@ -24,8 +24,9 @@ class AnalisisTicket(BaseModel):
     prioridad: str
     resumen: str
     id_ticket: str
+    modulo_detectado: str # Nuevo: Ej. Ventas, Contabilidad
     datos_faltantes: str
-    intencion: str  # REPORTE, APORTE, SALUDO
+    intencion: str 
 
 # --- Función Auxiliar ---
 def generar_id_ticket():
@@ -33,111 +34,102 @@ def generar_id_ticket():
     suffix = str(random.randint(100, 999))
     return f"TK-{fecha}-{suffix}"
 
-# --- Función 1: El Clasificador Estratégico ---
+# --- Función 1: El Auditor de Calidad ---
 def analizar_ticket(mensaje_usuario: str):
     nuevo_id = generar_id_ticket()
 
     if not GOOGLE_API_KEY:
-        # Fallback de seguridad
         return AnalisisTicket(
-            es_ticket_valido=True, categoria="Error Config", prioridad="Alta", 
-            resumen="Falta API Key", id_ticket=nuevo_id, datos_faltantes="N/A", intencion="REPORTE"
+            es_ticket_valido=True, categoria="Error", prioridad="Alta", resumen="Falta API Key", 
+            id_ticket=nuevo_id, modulo_detectado="N/A", datos_faltantes="N/A", intencion="REPORTE"
         )
 
     try:
         model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
 
         prompt = f"""
-        Actúa como un Clasificador Senior de Mesa de Ayuda Corporativa.
-        Analiza el siguiente mensaje entrante: "{mensaje_usuario}"
+        Actúa como un Auditor de Soporte Técnico (Nivel 2).
+        Analiza el siguiente reporte: "{mensaje_usuario}"
 
-        TU MISIÓN:
-        Clasificar la INTENCIÓN del usuario con precisión quirúrgica.
+        TU OBJETIVO:
+        Verificar si el reporte cumple con los 5 REQUISITOS OBLIGATORIOS para ser gestionado.
 
-        REGLAS DE CLASIFICACIÓN (Campo 'intencion'):
-        1. "SALUDO": Si el mensaje es SOLO un agradecimiento, confirmación de espera o cierre (ej: "Gracias", "Ok, aguardo", "Entendido").
-        2. "APORTE": Si el mensaje SOLO contiene adjuntos, logs o respuestas a una pregunta previa sin reportar nada nuevo.
-        3. "REPORTE": Si el usuario describe un problema, error, o hace una consulta técnica.
+        LISTA DE VERIFICACIÓN (CHECKLIST):
+        1. [SISTEMA]: ¿Menciona el sistema operativo o navegador?
+        2. [MODULO]: ¿Menciona el módulo afectado (ej: Ventas, Stock, Login)?
+        3. [ERROR]: ¿Provee el mensaje de error textual o código?
+        4. [DESCRIPCION]: ¿Explica qué paso estaba realizando antes del fallo?
+        5. [EVIDENCIA]: ¿Menciona haber adjuntado capturas, logs o fotos?
 
-        REGLAS DE DATOS (Solo para REPORTE):
-        - Si es SALUDO o APORTE -> datos_faltantes: "Ninguno".
-        - Si es REPORTE -> Lista qué falta para resolverlo (Capturas, Logs, ID Cliente) o "Ninguno" si está completo.
+        INSTRUCCIONES:
+        - Si la intención es "SALUDO" (Gracias, Ok) o "APORTE" (Solo envío foto), ignora la checklist.
+        - Si es "REPORTE", verifica qué falta.
 
-        Salida JSON ESTRICTA:
+        SALIDA JSON OBLIGATORIA:
         {{
             "es_ticket_valido": true,
-            "categoria": "Software/Hardware/Facturación/Consulta/General",
+            "intencion": "REPORTE, SALUDO o APORTE",
+            "categoria": "Software/Hardware/Red/Facturación",
             "prioridad": "Baja/Media/Alta",
-            "resumen": "Resumen ejecutivo (max 8 palabras)",
-            "datos_faltantes": "Lista o 'Ninguno'",
-            "intencion": "REPORTE, APORTE o SALUDO"
+            "modulo_detectado": "Nombre del módulo o 'No especificado'",
+            "resumen": "Resumen técnico (max 10 palabras)",
+            "datos_faltantes": "Lista TEXTUAL de lo que falta de la checklist (ej: 'Módulo afectado y Captura de pantalla') o 'Ninguno' si tiene todo."
         }}
         """
 
         response = model.generate_content(prompt)
         
-        # Extracción segura de JSON
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if match:
             datos_dict = json.loads(match.group(0))
             datos_dict["id_ticket"] = nuevo_id
             return AnalisisTicket(**datos_dict)
         else:
-            raise Exception("Formato JSON no válido")
+            raise Exception("Error formato JSON")
 
     except Exception as e:
-        print(f"⚠️ Error IA Analisis: {e}")
+        print(f"⚠️ Error IA: {e}")
         return AnalisisTicket(
-            es_ticket_valido=True, categoria="General", prioridad="Media", 
-            resumen="Revisión Manual", id_ticket=nuevo_id, datos_faltantes="Ninguno", intencion="REPORTE"
+            es_ticket_valido=True, categoria="General", prioridad="Media", resumen="Manual",
+            id_ticket=nuevo_id, modulo_detectado="N/A", datos_faltantes="Revisión humana", intencion="REPORTE"
         )
 
-# --- Función 2: El Redactor Profesional ---
-def generar_respuesta_cliente(cliente_nombre: str, categoria: str, datos_faltantes: str, id_ticket: str, intencion: str):
+# --- Función 2: El Gestor de Casos (Respuesta) ---
+def generar_respuesta_cliente(cliente_nombre: str, categoria: str, datos_faltantes: str, id_ticket: str, intencion: str, modulo: str):
     try:
         model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
 
-        # Definimos la estrategia de comunicación según la intención
+        # Lógica estricta de gestión
         if intencion == "SALUDO":
-            contexto = "El cliente ha enviado un mensaje de agradecimiento o confirmación."
-            accion = "Agradece la comunicación, confirma que el ticket se mantiene actualizado y cierra con un saludo cordial. Sé breve."
-        
+            objetivo = "Cerrar la interacción cortésmente."
         elif intencion == "APORTE":
-            contexto = "El cliente ha enviado información adicional o archivos adjuntos."
-            accion = "Confirma explícitamente la recepción de la nueva información/archivos. Indica que han sido anexados al Ticket e informa que el equipo técnico los analizará a la brevedad."
-        
-        else: # REPORTE
-            contexto = f"El cliente reporta un incidente de categoría: {categoria}."
+            objetivo = "Confirmar recepción de evidencia y anexar al legajo."
+        else:
+            # Es un REPORTE
             if "Ninguno" in datos_faltantes or "ninguno" in datos_faltantes:
-                accion = "Informa que el reporte es completo y ha sido derivado inmediatamente a un Especialista de Nivel 2. Pide paciencia mientras se gestiona."
+                objetivo = f"INFORMAR GESTIÓN: Confirmar que el reporte sobre el módulo '{modulo}' está completo. Indicar que se ha escalado al equipo de Desarrollo/Infraestructura para resolución inmediata."
             else:
-                accion = f"Explica que para avanzar con la solución, es INDISPENSABLE que responda adjuntando: {datos_faltantes}."
+                objetivo = f"SOLICITAR INFORMACIÓN: Detener la gestión. Explicar profesionalmente que NO se puede proceder sin los siguientes datos faltantes: {datos_faltantes}. Pedirlos en forma de lista."
 
         prompt = f"""
-        Actúa como un Ejecutivo de Atención al Cliente Corporativo.
-        Estás redactando una respuesta oficial.
+        Actúa como Gerente de Mesa de Ayuda Corporativa.
+        Redacta un correo para el cliente: {cliente_nombre}.
+        Ticket ID: {id_ticket}.
 
-        DATOS:
-        - Cliente: {cliente_nombre}
-        - Ticket ID: {id_ticket}
-        - Situación: {contexto}
+        OBJETIVO DEL CORREO: {objetivo}
 
-        INSTRUCCIÓN:
-        Redacta el cuerpo del correo siguiendo esta lógica: {accion}
+        ESTRUCTURA EXIGIDA:
+        1. Saludo formal.
+        2. Referencia clara al estado del Ticket #{id_ticket}.
+        3. CUERPO:
+           - Si faltan datos: Pídelos usando viñetas (bullets) para que sea claro.
+           - Si está completo: Confirma tiempos estimados de respuesta (SLA estándar).
+        4. Cierre formal ("Atentamente, Equipo de Soporte").
 
-        REGLAS DE ESTILO (NO NEGOCIABLES):
-        1. Tono: Formal, Empático, Ejecutivo y Resolutivo.
-        2. Estructura: 
-           - Saludo formal (Estimado/a...).
-           - Referencia al Ticket #{id_ticket}.
-           - Mensaje central (La Acción definida arriba).
-           - Cierre profesional (Atentamente, [Nombre de Empresa/Soporte]).
-        3. NO inventes nombres de agentes. Firma como "Equipo de Soporte".
-        4. Idioma: Español Neutro.
+        TONO: Profesional, técnico pero accesible, resolutivo.
         """
         
         response = model.generate_content(prompt)
         return response.text.strip()
-    
     except Exception:
-        return f"Estimado cliente, hemos actualizado la información de su ticket #{id_ticket}. Quedamos a su disposición."
+        return f"Ticket #{id_ticket} actualizado. Por favor verifique si necesitamos más información."
