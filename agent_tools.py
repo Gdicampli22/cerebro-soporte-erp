@@ -45,7 +45,7 @@ def analizar_ticket(mensaje_usuario: str):
         )
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
+        model = genai.GenerativeModel('gemini-3-flash-preview', generation_config=generation_config)
 
         prompt = f"""
         Actúa como un Auditor de Soporte Técnico (Nivel 2).
